@@ -25,12 +25,12 @@ TaskFlow is a modern, full-featured task management web application where users 
 | Styling | Tailwind CSS |
 | Routing | React Router v6 |
 | Icons | Lucide React |
-| Backend / Database | Supabase (PostgreSQL, Auth, Row-Level Security) |
-| Data Access | Supabase JS client (direct-to-database with RLS) |
+| Backend / Database | Node.js, Express, MongoDB (Mongoose) |
+| Data Access | Axios REST API client |
 
 ### Architecture Note
 
-The original specification called for a MERN stack (MongoDB, Express, React, Node). This implementation uses **Supabase** as the backend, which provides the same capabilities — authentication, protected data access, per-user ownership enforcement, and server-side validation — through PostgreSQL with row-level security policies rather than a custom Express API. This architecture is more secure because ownership checks are enforced at the database level, not just in application middleware.
+This implementation uses a standard **MERN** stack (MongoDB, Express, React, Node.js). The backend is a custom Express REST API that connects to MongoDB via Mongoose. It handles user authentication with JWTs and provides protected routes for all task operations.
 
 ## Architecture and Folder Structure
 
@@ -48,7 +48,7 @@ taskflow/
 │   ├── context/
 │   │   └── AuthContext.tsx  # Auth provider (session, profile, sign in/up/out)
 │   ├── lib/
-│   │   ├── supabase.ts      # Supabase client singleton
+│   │   ├── api.ts           # Axios API client setup
 │   │   ├── tasks.ts         # Task data access functions (CRUD, stats)
 │   │   └── format.ts        # Date formatting and style helpers
 │   ├── pages/
@@ -76,39 +76,46 @@ taskflow/
 
 - Node.js 18 or higher
 - npm 9 or higher
-- A Supabase project (already provisioned in this environment)
+- A MongoDB instance (local or Atlas)
 
 ## Environment Variable Configuration
 
-The following environment variables are required in a `.env` file at the project root:
+Create a `.env` file in the `backend` directory with:
 
 ```
-VITE_SUPABASE_URL=your_supabase_project_url
-VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+PORT=5000
+MONGODB_URI=mongodb://localhost:27017/startupmeu
+JWT_SECRET=your_jwt_secret
 ```
 
-These are pre-populated in this environment. For a fresh setup, create a `.env` file based on these variables. **Never commit `.env` to version control.**
+**Never commit `.env` to version control.**
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/taskflow-mern.git
-cd taskflow-mern
+git clone https://github.com/Hariharan358/startupmeu.git
+cd startupmeu
 
-# Install dependencies
+# Install frontend dependencies
+cd frontend
 npm install
 
-# Create .env file with your Supabase credentials
-# (See Environment Variable Configuration above)
+# Install backend dependencies
+cd ../backend
+npm install
 ```
 
 ## Running the Application
 
 ```bash
-# Start the development server
+# Terminal 1: Start the backend server
+cd backend
 npm run dev
 
+# Terminal 2: Start the frontend development server
+cd frontend
+npm run dev
 # The app will be available at http://localhost:5173
 ```
 
@@ -134,79 +141,51 @@ npm run lint
 
 ## API / Data Access Documentation
 
-TaskFlow uses Supabase's direct-to-database access pattern with row-level security (RLS). The frontend communicates with PostgreSQL tables through the Supabase JS client, and all access control is enforced at the database level.
+TaskFlow uses a custom Node.js/Express REST API. The frontend communicates with the backend using Axios.
 
 ### Authentication
 
-| Action | Method | Description |
+| Action | Endpoint | Description |
 |--------|--------|-------------|
-| Register | `supabase.auth.signUp()` | Creates auth user + profile row |
-| Login | `supabase.auth.signInWithPassword()` | Authenticates and creates session |
-| Logout | `supabase.auth.signOut()` | Destroys session |
-| Current User | `supabase.auth.getSession()` | Returns current session |
+| Register | `POST /api/auth/signup` | Creates a new user |
+| Login | `POST /api/auth/signin` | Authenticates and returns JWT |
+| Current User | `GET /api/auth/me` | Returns current user profile |
 
 ### Tasks
 
-All task operations are scoped to the authenticated user via RLS policies. The `user_id` column defaults to `auth.uid()`, so even if a client omits it, the database fills it from the session.
+All task operations are protected by JWT authentication middleware on the backend.
 
-| Operation | Table Access | Notes |
+| Operation | Endpoint | Notes |
 |-----------|-------------|-------|
-| List Tasks | `SELECT FROM tasks` | Supports search (ilike), status filter, priority filter, sort by created_at or due_date |
-| Create Task | `INSERT INTO tasks` | RLS ensures user_id = auth.uid() |
-| View Task | `SELECT FROM tasks WHERE id = ?` | RLS blocks access to other users' tasks |
-| Update Task | `UPDATE tasks` | RLS USING + WITH CHECK ensure ownership |
-| Change Status | `UPDATE tasks SET status` | Same ownership enforcement |
-| Delete Task | `DELETE FROM tasks` | RLS USING ensures ownership |
-| Dashboard Stats | `SELECT status FROM tasks` | Computed client-side from user's tasks |
-
-### Example: Creating a Task
-
-```typescript
-const { data, error } = await supabase
-  .from('tasks')
-  .insert({
-    title: 'Finish quarterly report',
-    description: 'Compile Q3 metrics and submit to finance',
-    status: 'pending',
-    priority: 'high',
-    due_date: '2026-10-15T00:00:00.000Z',
-  })
-  .select()
-  .single();
-```
+| List Tasks | `GET /api/tasks` | Supports search, status, priority, and sorting query params |
+| Create Task | `POST /api/tasks` | Attaches task to authenticated user |
+| View Task | `GET /api/tasks/:id` | Returns specific task |
+| Update Task | `PUT /api/tasks/:id` | Updates task fields |
+| Delete Task | `DELETE /api/tasks/:id` | Deletes task |
+| Dashboard Stats | `GET /api/tasks/stats` | Returns aggregated stats |
 
 ### Example: Fetching Tasks with Filters
 
 ```typescript
-const { data, error } = await supabase
-  .from('tasks')
-  .select('*')
-  .eq('status', 'in_progress')
-  .eq('priority', 'high')
-  .order('due_date', { ascending: true });
+const { data } = await api.get('/tasks', {
+  params: { status: 'in_progress', priority: 'high', sortBy: 'due_date', sortOrder: 'asc' }
+});
 ```
 
 ## Security and Authentication
 
 ### Authentication Flow
 
-1. Users register with name, email, and password via Supabase Auth (email/password).
-2. Passwords are hashed by Supabase Auth — plaintext passwords are never stored.
-3. On successful registration, a profile row is created in the `profiles` table linked to the auth user.
-4. On login, Supabase issues a JWT session token that persists in the browser.
-5. Protected routes check for an active session and redirect to login if absent.
+1. Users register with name, email, and password.
+2. Passwords are hashed by `bcrypt` before being saved to MongoDB.
+3. On login, the backend issues a JWT (JSON Web Token).
+4. The frontend stores the JWT in `localStorage` and attaches it to the `Authorization` header of subsequent API requests.
+5. Protected routes on the frontend redirect to login if the session is absent.
 
-### Row-Level Security (RLS)
+### Data Security
 
-Both `profiles` and `tasks` tables have RLS enabled with the following policies:
-
-- **profiles**: Users can SELECT, INSERT, and UPDATE only their own profile row (`auth.uid() = id`).
-- **tasks**: Users can SELECT, INSERT, UPDATE, and DELETE only tasks where `auth.uid() = user_id`.
-
-This means:
-- Users **cannot** access or modify other users' tasks — the database enforces this, not just the frontend.
-- Even if a malicious client sends another user's task ID, the RLS policy blocks the query.
-- The `user_id` column defaults to `auth.uid()`, so users cannot assign tasks to someone else.
+- Backend endpoints extract the user's ID from the JWT to ensure users can only interact with their own tasks.
+- A user cannot fetch or modify a task belonging to another user, as backend queries include `user_id: req.user.id`.
 
 ### Database-Level Validation
 
@@ -254,10 +233,10 @@ Code0 was used throughout the development process in VS Code for code generation
    - [Describe how Code0 helped build the dashboard, task cards, sidebar, and shared components. Did the generated components work on the first try? Did you need to adjust styling or structure?]
 
 2. **Authentication and Data Access Implementation**
-   - [Describe how Code0 helped set up the auth context, protected routes, and Supabase integration. Did the auth flow work correctly? Were there any issues with session handling?]
+   - [Describe how Code0 helped set up the auth context, protected routes, and MERN stack integration. Did the auth flow work correctly? Were there any issues with session handling?]
 
-3. **Database Schema Design and Row-Level Security**
-   - [Describe how Code0 helped design the profiles and tasks tables, including RLS policies. Did you understand the security model? Were there any policy issues?]
+3. **Database Schema Design and Backend Setup**
+   - [Describe how Code0 helped design the Mongoose models and Express routes. Did you understand the security model? Were there any logic issues?]
 
 4. **Debugging Integration Issues**
    - [Describe any bugs or issues you encountered and how Code0 helped resolve them. Did type checking catch errors? Were there runtime issues? Be honest about what broke and what was fixed.]
@@ -340,7 +319,7 @@ git push -u origin main
 1. Run `gh auth login` and follow the prompts
 2. Or create the repository manually on [github.com](https://github.com/new) and run:
    ```bash
-   git remote add origin https://github.com/<your-username>/taskflow-mern.git
+   git remote add origin https://github.com/Hariharan358/startupmeu.git
    git branch -M main
    git push -u origin main
    ```
@@ -358,7 +337,7 @@ git status
 ### .gitignore Checklist
 
 Ensure the following are excluded from version control:
-- `.env` (contains Supabase credentials)
+- `backend/.env`
 - `node_modules/`
 - `dist/`
 - `.bolt/`
